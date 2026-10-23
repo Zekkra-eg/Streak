@@ -255,7 +255,7 @@ export default function Home() {
     <header className="topbar"><a className="wordmark" href="#"><span className="brandMark small"><Flame size={18}/></span>Daily Duo <span className="accent">Streak</span></a><div className="topActions"><span className="userChip">{sessionUser.email}</span><button className="iconButton" onClick={signOut} title="Sign out"><LogOut size={17}/></button></div></header>
     <div className="dashboard">
       <section className="hero">
-        <div><p className="eyebrow">YOUR LITTLE CORNER OF CONSISTENCY</p><h1>{duo.name}<span className="accent">.</span></h1><p className="muted">Two besties. One streak. Every day.</p></div>
+        <div><p className="eyebrow">YOUR LITTLE CORNER OF CONSISTENCY</p><h1>{duo.name}<span className="accent">.</span></h1><p className="muted"> One streak. Every day.</p></div>
         <div className="inviteBox"><span className="tinyLabel">YOUR INVITE CODE</span><div className="codeLine"><b>{duo.invite_code}</b><button className="iconButton" onClick={copyCode} title="Copy code"><Copy size={16}/></button></div><small>Share this with your bestie</small></div>
       </section>
       <section className="statsGrid">
