@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
-import { Flame, CalendarDays, Check, Plus, LogOut, Users, Sparkles, Copy, RefreshCw, CircleHelp } from "lucide-react";
+import { Flame, CalendarDays, Check, Plus, LogOut, Users, Sparkles, Copy, Pencil, Trash2, X } from "lucide-react";
 
 type Duo = { id: string; name: string; invite_code: string };
 type DayRow = { id: string; duo_id: string; day_date: string; created_at: string };
@@ -40,6 +40,9 @@ export default function Home() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [newTask, setNewTask] = useState("");
   const [newTaskOwner, setNewTaskOwner] = useState("me");
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState("");
+  const [editingCategory, setEditingCategory] = useState("");
   const [myLabel, setMyLabel] = useState("Me");
   const [bestieLabel, setBestieLabel] = useState("Bestie");
   const [loading, setLoading] = useState(true);
@@ -164,6 +167,55 @@ export default function Home() {
     const {data,error} = await supabase.from("tasks").insert({day_id:today.id,assigned_to:newTaskOwner,title:newTask.trim(),category:"Custom",required:true,done:false}).select("*").single();
     if (error) setNotice(error.message); else {setTasks(old=>[...old,data as Task]);setNewTask("");}
   }
+  function startEditTask(task: Task) {
+    setEditingTaskId(task.id);
+    setEditingTitle(task.title);
+    setEditingCategory(task.category || "Personal");
+  }
+  async function saveTaskEdit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!supabase || !editingTaskId || !editingTitle.trim()) return;
+    setBusy(true);
+    const { data, error } = await supabase.from("tasks")
+      .update({ title: editingTitle.trim(), category: editingCategory.trim() || "Personal" })
+      .eq("id", editingTaskId).select("*").single();
+    if (error) setNotice(error.message);
+    else {
+      setTasks(old => old.map(t => t.id === editingTaskId ? data as Task : t));
+      setNotice("Task updated successfully.");
+      setEditingTaskId(null);
+    }
+    setBusy(false);
+  }
+  async function deleteTask(task: Task) {
+    if (!supabase || !window.confirm(`Delete “${task.title}”? This cannot be undone.`)) return;
+    const { error } = await supabase.from("tasks").delete().eq("id", task.id);
+    if (error) setNotice(error.message);
+    else {
+      setTasks(old => old.filter(t => t.id !== task.id));
+      if (editingTaskId === task.id) setEditingTaskId(null);
+      setNotice("Task deleted.");
+    }
+  }
+  function renderTask(task: Task) {
+    return <div className="taskItem" key={task.id}>
+      <div className="taskLine">
+        <button className={`taskRow ${task.done ? "checked" : ""}`} onClick={() => void toggleTask(task)}>
+          <span className="checkCircle">{task.done && <Check size={15}/>}</span>
+          <span className="taskTitle">{task.title}<small>{task.category}</small></span>
+        </button>
+        <div className="taskActions">
+          <button className="taskAction" type="button" title="Edit task" aria-label={`Edit ${task.title}`} onClick={() => startEditTask(task)}><Pencil size={14}/></button>
+          <button className="taskAction danger" type="button" title="Delete task" aria-label={`Delete ${task.title}`} onClick={() => void deleteTask(task)}><Trash2 size={14}/></button>
+        </div>
+      </div>
+      {editingTaskId === task.id && <form className="editTaskForm" onSubmit={saveTaskEdit}>
+        <label>Task title<input autoFocus value={editingTitle} onChange={e => setEditingTitle(e.target.value)} required maxLength={120}/></label>
+        <label>Category<input value={editingCategory} onChange={e => setEditingCategory(e.target.value)} maxLength={40} placeholder="Personal"/></label>
+        <div className="editTaskActions"><button className="secondary mini" type="button" onClick={() => setEditingTaskId(null)}><X size={14}/> Cancel</button><button className="primary mini" type="submit" disabled={busy || !editingTitle.trim()}><Check size={14}/> Save</button></div>
+      </form>}
+    </div>;
+  }
   async function signOut() { if (supabase) await supabase.auth.signOut(); }
   async function copyCode() {
     if (!duo?.invite_code) return;
@@ -214,9 +266,9 @@ export default function Home() {
         <section className="panel tasksPanel">
           <div className="sectionHead"><div><p className="eyebrow">TODAY'S MISSION</p><h2>{new Date().toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric"})}</h2></div><span className={`statusPill ${allDone?"success":""}`}>{allDone?"Day complete":"In progress"}</span></div>
           <div className="personBlock"><div className="avatar peach">{myLabel.slice(0,1).toUpperCase()}</div><div className="personInfo"><b>{myLabel}</b><span>{mine.filter(t=>t.required&&t.done).length} of {mine.filter(t=>t.required).length} required done</span></div></div>
-          {mine.map(t=><button className={`taskRow ${t.done?"checked":""}`} key={t.id} onClick={()=>void toggleTask(t)}><span className="checkCircle">{t.done&&<Check size={15}/>}</span><span className="taskTitle">{t.title}<small>{t.category}</small></span></button>)}
+          {mine.map(renderTask)}
           <div className="personBlock second"><div className="avatar lilac">{bestieLabel.slice(0,1).toUpperCase()}</div><div className="personInfo"><b>{bestieLabel}</b><span>{bestie.filter(t=>t.required&&t.done).length} of {bestie.filter(t=>t.required).length} required done</span></div></div>
-          {bestie.map(t=><button className={`taskRow ${t.done?"checked":""}`} key={t.id} onClick={()=>void toggleTask(t)}><span className="checkCircle">{t.done&&<Check size={15}/>}</span><span className="taskTitle">{t.title}<small>{t.category}</small></span></button>)}
+          {bestie.map(renderTask)}
           <form className="addTask" onSubmit={addTask}><input value={newTask} onChange={e=>setNewTask(e.target.value)} placeholder="Add a mission for today…"/><select value={newTaskOwner} onChange={e=>setNewTaskOwner(e.target.value)}><option value="me">{myLabel}</option><option value="bestie">{bestieLabel}</option><option value="both">Both</option></select><button className="primary mini" disabled={!newTask.trim()}><Plus size={16}/></button></form>
         </section>
         <section className="panel calendarPanel">
