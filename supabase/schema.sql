@@ -42,6 +42,17 @@ create index if not exists duo_members_user_idx on public.duo_members(user_id);
 create index if not exists days_duo_date_idx on public.days(duo_id,day_date desc);
 create index if not exists tasks_day_idx on public.tasks(day_id);
 
+-- Shared streak restore ledger: three uses per duo per calendar month.
+create table if not exists public.duo_streak_restores (
+  id uuid primary key default gen_random_uuid(),
+  duo_id uuid not null references public.duos(id) on delete cascade,
+  restored_date date not null,
+  used_by uuid not null references auth.users(id) on delete cascade,
+  used_at timestamptz not null default now(),
+  unique (duo_id, restored_date)
+);
+create index if not exists duo_streak_restores_duo_used_idx on public.duo_streak_restores(duo_id, used_at desc);
+
 create or replace function public.is_duo_member(target_duo uuid)
 returns boolean language sql stable security definer set search_path = public
 as $$ select exists(select 1 from public.duo_members where duo_id=target_duo and user_id=auth.uid()); $$;
@@ -93,6 +104,7 @@ alter table public.duos enable row level security;
 alter table public.duo_members enable row level security;
 alter table public.days enable row level security;
 alter table public.tasks enable row level security;
+alter table public.duo_streak_restores enable row level security;
 
 drop policy if exists "members can read their duo" on public.duos;
 create policy "members can read their duo" on public.duos for select to authenticated using (public.is_duo_member(id));
@@ -104,6 +116,8 @@ drop policy if exists "members can read days" on public.days;
 create policy "members can read days" on public.days for select to authenticated using (public.is_duo_member(duo_id));
 drop policy if exists "members can create days" on public.days;
 create policy "members can create days" on public.days for insert to authenticated with check (public.is_duo_member(duo_id));
+drop policy if exists "members can read duo restores" on public.duo_streak_restores;
+create policy "members can read duo restores" on public.duo_streak_restores for select to authenticated using (public.is_duo_member(duo_id));
 drop policy if exists "members can read tasks" on public.tasks;
 create policy "members can read tasks" on public.tasks for select to authenticated using (public.is_day_member(day_id));
 drop policy if exists "members can create tasks" on public.tasks;
@@ -113,10 +127,117 @@ create policy "members can update tasks" on public.tasks for update to authentic
 drop policy if exists "members can delete tasks" on public.tasks;
 create policy "members can delete tasks" on public.tasks for delete to authenticated using (public.is_day_member(day_id));
 
+create or replace function public.restore_streak_day(target_date date)
+returns public.duo_streak_restores
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  member_duo uuid;
+  restore_count integer;
+  target_day_id uuid;
+  required_count integer := 0;
+  done_count integer := 0;
+  new_restore public.duo_streak_restores;
+  cairo_today date := (now() at time zone 'Africa/Cairo')::date;
+  cairo_month timestamp := date_trunc('month', now() at time zone 'Africa/Cairo');
+begin
+  if auth.uid() is null then
+    raise exception 'You must be signed in to restore a day.';
+  end if;
+
+  select dm.duo_id into member_duo
+  from public.duo_members dm
+  where dm.user_id = auth.uid()
+  limit 1;
+
+  if member_duo is null then
+    raise exception 'Join a duo before using a streak restore.';
+  end if;
+
+  if target_date >= cairo_today then
+    raise exception 'Only a past day can be restored.';
+  end if;
+
+  -- Serialize quota checks for the duo so both members cannot spend the last restore at once.
+  perform 1 from public.duos where id = member_duo for update;
+
+  select count(*) into restore_count
+  from public.duo_streak_restores r
+  where r.duo_id = member_duo
+    and date_trunc('month', r.used_at at time zone 'Africa/Cairo') = cairo_month;
+
+  if restore_count >= 3 then
+    raise exception 'Your duo has already used all 3 restores for this month.';
+  end if;
+
+  if exists (
+    select 1 from public.duo_streak_restores r
+    where r.duo_id = member_duo and r.restored_date = target_date
+  ) then
+    raise exception 'This day has already been restored.';
+  end if;
+
+  select d.id into target_day_id
+  from public.days d
+  where d.duo_id = member_duo and d.day_date = target_date
+  for update;
+
+  if target_day_id is not null then
+    select count(*) into required_count
+    from public.tasks t where t.day_id = target_day_id and t.required = true;
+
+    select count(*) into done_count
+    from public.tasks t where t.day_id = target_day_id and t.required = true and t.done = true;
+
+    if required_count > 0 and done_count = required_count then
+      raise exception 'This day is already complete; it does not need a restore.';
+    end if;
+  else
+    insert into public.days(duo_id, day_date)
+    values (member_duo, target_date)
+    on conflict (duo_id, day_date) do nothing
+    returning id into target_day_id;
+
+    if target_day_id is null then
+      select d.id into target_day_id from public.days d
+      where d.duo_id = member_duo and d.day_date = target_date;
+    end if;
+  end if;
+
+  insert into public.duo_streak_restores(duo_id, restored_date, used_by)
+  values (member_duo, target_date, auth.uid())
+  returning * into new_restore;
+
+  return new_restore;
+end;
+$$;
+
+
+
 grant execute on function public.create_duo(text,text,text) to authenticated;
 grant execute on function public.join_duo(text,text) to authenticated;
+grant execute on function public.restore_streak_day(date) to authenticated;
 grant execute on function public.is_duo_member(uuid) to authenticated;
 grant execute on function public.is_day_member(uuid) to authenticated;
-grant select on public.duos, public.duo_members, public.days, public.tasks to authenticated;
+grant select on public.duos, public.duo_members, public.days, public.tasks, public.duo_streak_restores to authenticated;
 grant insert, update, delete on public.days, public.tasks to authenticated;
 grant update on public.duo_members to authenticated;
+
+-- Enable realtime updates for shared duo changes where Supabase Realtime is available.
+do $$
+begin
+  if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+    if not exists (select 1 from pg_publication_tables where pubname='supabase_realtime' and schemaname='public' and tablename='days') then
+      alter publication supabase_realtime add table public.days;
+    end if;
+    if not exists (select 1 from pg_publication_tables where pubname='supabase_realtime' and schemaname='public' and tablename='tasks') then
+      alter publication supabase_realtime add table public.tasks;
+    end if;
+    if not exists (select 1 from pg_publication_tables where pubname='supabase_realtime' and schemaname='public' and tablename='duo_streak_restores') then
+      alter publication supabase_realtime add table public.duo_streak_restores;
+    end if;
+  end if;
+end $$;
+
