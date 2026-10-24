@@ -149,7 +149,11 @@ export default function Home() {
       .on("postgres_changes", { event: "*", schema: "public", table: "tasks" }, () => { void loadWorkspace(sessionUser.id, false); })
       .on("postgres_changes", { event: "*", schema: "public", table: "duo_streak_restores", filter: `duo_id=eq.${duo.id}` }, () => { void loadWorkspace(sessionUser.id, false); })
       .subscribe();
-    return () => { void supabase.removeChannel(channel); };
+    return () => {
+  if (supabase) {
+    void supabase.removeChannel(channel);
+  }
+};
   }, [duo?.id, sessionUser?.id, loading, loadWorkspace]);
 
   async function authenticate(e: React.FormEvent) {
